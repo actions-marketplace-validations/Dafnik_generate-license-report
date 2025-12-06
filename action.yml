@@ -6,19 +6,82 @@ branding:
   color: 'purple'
 
 inputs:
-  package:
+  custom-license-report-command:
+    description: 'Indicates if the action should use the `license-report` command from `package.json` or not'
+    required: false
+    default: 'false'
+  prettier:
+    description: 'Indicates if the license report should be formatted with prettier'
+    required: false
+    default: 'true'
+  package-json-path:
     description: 'package.json path'
     required: false
     default: 'package.json'
-  path:
+  license-report-path:
     description: 'file path'
     required: false
     default: 'licenses.json'
-  output:
+  output-format:
     description: 'output format'
     required: false
     default: 'json'
 
 runs:
-  using: 'node16'
-  main: 'dist/index.js'
+  using: 'composite'
+  steps:
+    - name: generate new report
+      if: "${{ inputs.custom-license-report-command == 'false' }}"
+      shell: bash
+      run: npm exec -- license-report --only=prod,peer --fields=name --fields=licenseType --fields=link --fields=installedVersion --fields=author --package=${{ inputs.package-json-path }} --output=${{ inputs.output-format }} > "${{ inputs.license-report-path }}.new"
+
+    - name: generate new report (custom command)
+      if: "${{ inputs.custom-license-report-command == 'true' }}"
+      shell: bash
+      run: npm run license-report > "${{ inputs.license-report-path }}.new"
+
+    - name: format with prettier
+      if: "${{ inputs.prettier == 'true' }}"
+      shell: bash
+      run: npm exec -- prettier --parser=${{ inputs.output-format}} --write "${{ inputs.license-report-path }}.new"
+
+    - uses: LouisBrunner/diff-action@v2.2.0
+      name: check for differences
+      id: diff-check # required for steps.diff-check to function
+      continue-on-error: true
+      with:
+        old: ${{ inputs.license-report-path }}
+        new: ${{ inputs.license-report-path }}.new
+        mode: addition
+        tolerance: same
+
+    - name: Move files in place
+      if: steps.diff-check.outputs.passed != 'true'
+      shell: bash
+      run: mv -f ${{ inputs.license-report-path }}.new ${{ inputs.license-report-path }}
+
+    - name: Delete new file if not needed
+      if: steps.diff-check.outputs.passed == 'true'
+      shell: bash
+      run: |
+        rm ${{ inputs.license-report-path }}.new
+
+    - name: output licenses
+      id: output
+      shell: bash
+      run: |
+        delimiter=$(openssl rand -hex 8)
+        echo "licenses<<$delimiter" >> "${GITHUB_OUTPUT}"
+        echo -e "$(cat ${{ inputs.license-report-path }})" >> "${GITHUB_OUTPUT}"
+        echo "$delimiter" >> "${GITHUB_OUTPUT}"
+
+outputs:
+  has-no-changes:
+    description: Flag to indicate if there are changes in the licenses file.
+    value: ${{ steps.diff-check.outputs.passed }}
+  diff:
+    description: Differences between old and new license report in markdown.
+    value: ${{ steps.diff-check.outputs.output }}
+  licenses:
+    description: License report as string in your chosen output-format. Is always returned
+    value: ${{ steps.output.outputs.licenses }}
